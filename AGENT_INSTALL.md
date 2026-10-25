@@ -26,6 +26,20 @@ crewseb setup
 ```sh
 crewseb check
 crewseb roster
+crewseb models
 hubseb ls
 hubseb doctor
+```
+
+## 5. (Optional) Configure Local (Ollama) or Custom Models per Role/Tier
+```sh
+# Local Ollama preset across tiers (fast=qwen2.5-coder:7b, balanced=qwen2.5-coder:14b, deep=deepseek-r1:32b)
+crewseb models preset ollama
+
+# Or single local model across all tiers
+crewseb models preset ollama --model ollama/qwen2.5-coder:32b
+
+# Or per-role / per-host override
+crewseb models set developer ollama/qwen2.5-coder:32b --host opencode
+crewseb models set architect pro --host antigravity
 ```
