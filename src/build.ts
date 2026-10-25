@@ -5,8 +5,10 @@ import {
   DriverHub,
   filterDialectBlocks,
   parseSpecialistMarkdown,
+  type ReasoningTier,
   SUPPORTED_HOSTS,
 } from 'hubseb'
+import { type CrewModelsConfig, resolveRoleModels, ROLE_TIERS } from './models.ts'
 import {
   CREW_ROLES,
   type CrewRole,
@@ -40,6 +42,7 @@ export function renderAgent(
   source: string,
   protocols: ReadonlyMap<string, string>,
   personas: Readonly<Record<CrewRole, string>> = DEFAULT_PERSONAS,
+  modelsConfig?: CrewModelsConfig,
 ): string {
   const personaName = personas[role] ?? DEFAULT_PERSONAS[role]
   const lines = source.split(/\r?\n/).map((line) => {
@@ -55,7 +58,31 @@ export function renderAgent(
     }
     return protocolContent.trim()
   })
-  return `${lines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd()}\n`
+
+  let rendered = `${lines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd()}\n`
+
+  if (modelsConfig) {
+    const fmMatch = /^---\r?\n([\s\S]*?)\r?\n---(\r?\n[\s\S]*)$/.exec(rendered)
+    if (fmMatch) {
+      const fmBody = fmMatch[1] ?? ''
+      const rest = fmMatch[2] ?? ''
+      const tierMatch = /^tier:\s*(fast|balanced|deep)\s*$/m.exec(fmBody)
+      const tier: ReasoningTier = (tierMatch?.[1] as ReasoningTier | undefined) ?? ROLE_TIERS[role]
+      const hostModels = resolveRoleModels(role, tier, modelsConfig)
+      const extraLines: string[] = []
+      for (const hostId of SUPPORTED_HOSTS) {
+        const val = hostModels[hostId]
+        if (val && !new RegExp(`^model\\.${hostId}:`, 'm').test(fmBody)) {
+          extraLines.push(`model.${hostId}: ${val}`)
+        }
+      }
+      if (extraLines.length > 0) {
+        rendered = `---\n${fmBody}\n${extraLines.join('\n')}\n---${rest}`
+      }
+    }
+  }
+
+  return rendered
 }
 
 async function markdownFiles(dir: string): Promise<string[]> {
@@ -75,6 +102,7 @@ export async function buildAgents(
   personas: Readonly<Record<CrewRole, string>> = DEFAULT_PERSONAS,
   sourceDir: string = SOURCE_DIR,
   protocolsDir: string = PROTOCOLS_DIR,
+  modelsConfig?: CrewModelsConfig,
 ): Promise<BuiltAgent[]> {
   const protocols = await loadProtocols(protocolsDir)
   const built: BuiltAgent[] = []
@@ -84,7 +112,7 @@ export async function buildAgents(
     built.push({
       name: role,
       personaName: personas[role] ?? DEFAULT_PERSONAS[role],
-      content: renderAgent(role, raw, protocols, personas),
+      content: renderAgent(role, raw, protocols, personas, modelsConfig),
     })
   }
   return built
