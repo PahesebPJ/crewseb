@@ -1,0 +1,49 @@
+{
+  "name": "crewseb",
+  "version": "0.1.0",
+  "description": "Specialist subagent crew with random personas, shared engineering protocols, and multi-host compilation for Antigravity CLI, Claude Code, Codex, and OpenCode.",
+  "license": "MIT",
+  "author": "PahesebPJ",
+  "homepage": "https://github.com/PahesebPJ/crewseb#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PahesebPJ/crewseb.git"
+  },
+  "bugs": {
+    "url": "https://github.com/PahesebPJ/crewseb/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "crewseb": "./dist/bin/crewseb.js"
+  },
+  "files": [
+    "dist",
+    "subagents",
+    "targets",
+    "rules",
+    "skills",
+    "README.md",
+    "AGENT_INSTALL.md"
+  ],
+  "scripts": {
+    "build:agents": "node src/bin/crewseb.ts build",
+    "build": "npm run build:agents && tsc -p tsconfig.build.json && node -e \"fs.chmodSync('dist/bin/crewseb.js', 0o755)\"",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/**/*.spec.ts\"",
+    "crewseb": "node src/bin/crewseb.ts"
+  },
+  "dependencies": {
+    "hubseb": "^0.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.2"
+  }
+}
