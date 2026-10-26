@@ -40,7 +40,7 @@
     "crewseb": "node src/bin/crewseb.ts"
   },
   "dependencies": {
-    "hubseb": "^0.2.0"
+    "hubseb": "^0.3.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
