@@ -24,7 +24,7 @@ Si el tipo no es obvio, pregunta antes de llamar a nadie. Enseña la cadena eleg
 ## 2. Divide y reparte
 
 - Parte la implementación en piezas que no dependen entre sí ni tocan los mismos archivos. Si comparten un contrato (API, esquema, evento), fíjalo antes de repartir.
-- Lanza en paralelo, en el mismo mensaje, hasta 10 agentes, aunque sean del mismo rol (dos `developer`, o `developer` y `devops`).
+- Lanza en paralelo, en el mismo mensaje, hasta 10 agentes, aunque sean del mismo rol (dos `developer`, o `developer` y `devops`), respetando la política de concurrencia activa (`parallel`, `queue` o `mixed` según VRAM/modelos locales).
 - **Mismo repo:**
   - crea la rama de la tarea (`feature/<n>` desde `develop`) en tu worktree;
   - lanza cada parte en su propio worktree aislado (en Antigravity usa `Workspace: "branch"`) y asígnale la sub-rama `feature/<n>-<parte>`;

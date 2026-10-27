@@ -3,3 +3,4 @@ dist/
 *.backup
 *.legacy-backup
 .DS_Store
+.worktrees/

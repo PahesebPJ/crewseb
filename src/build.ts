@@ -85,6 +85,23 @@ export function renderAgent(
   return rendered
 }
 
+export function renderSkillMarkdown(rawSkill: string, modelsConfig?: CrewModelsConfig): string {
+  if (!modelsConfig || modelsConfig.concurrency.mode === 'parallel') {
+    return rawSkill
+  }
+
+  const { mode, maxLocalParallel, overflowTarget } = modelsConfig.concurrency
+  const policyLine =
+    mode === 'queue'
+      ? `- **Modo Cola Activo (\`queue\`, maxLocal=${maxLocalParallel})**: Para evitar desbordar la VRAM de la GPU local, despacha como máximo ${maxLocalParallel} subagente(s) local(es) a la vez, encolando el resto secuencialmente.`
+      : `- **Modo Mixto Activo (\`mixed\`, maxLocal=${maxLocalParallel}, overflow=${overflowTarget})**: Lanza hasta ${maxLocalParallel} subagente(s) local(es) simultáneos; si hay más tareas paralelas en el mismo turno, despacha el excedente usando agentes ligeros (${overflowTarget === 'lite' ? 'modelos lite' : 'cualquier modelo disponible'}).`
+
+  if (rawSkill.includes('\n\n## 3. Corre la cadena')) {
+    return rawSkill.replace('\n\n## 3. Corre la cadena', `\n${policyLine}\n\n## 3. Corre la cadena`)
+  }
+  return `${rawSkill.trimEnd()}\n${policyLine}\n`
+}
+
 async function markdownFiles(dir: string): Promise<string[]> {
   if (!existsSync(dir)) return []
   return (await readdir(dir)).filter((file) => file.endsWith('.md')).sort()

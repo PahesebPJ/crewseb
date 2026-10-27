@@ -4,7 +4,30 @@ import path from 'node:path'
 import { type HostId, type ReasoningTier, SUPPORTED_HOSTS, SystemRuntime } from 'hubseb'
 import { CREW_ROLES, type CrewRole } from './personas.ts'
 
-export type ModelPresetName = 'default' | 'ollama' | 'cloud-tiered' | 'custom'
+export type ModelPresetName =
+  | 'default'
+  | 'lite'
+  | 'hard'
+  | 'hybrid'
+  | 'ollama'
+  | 'cloud-tiered'
+  | 'custom'
+
+export type ConcurrencyMode = 'parallel' | 'queue' | 'mixed'
+export type OverflowTarget = 'lite' | 'any'
+
+export interface CrewConcurrencyConfig {
+  mode: ConcurrencyMode
+  maxLocalParallel: number
+  overflowTarget: OverflowTarget
+}
+
+export const DEFAULT_CONCURRENCY: CrewConcurrencyConfig = {
+  mode: 'parallel',
+  maxLocalParallel: 1,
+  overflowTarget: 'lite',
+}
+
 export type HostTierModels = Partial<Record<ReasoningTier, string>>
 export type RoleHostOverrides = Partial<Record<HostId | '*', string>>
 
@@ -13,6 +36,7 @@ export interface CrewModelsConfig {
   preset: ModelPresetName
   tiers: Partial<Record<HostId, HostTierModels>>
   overrides: Partial<Record<CrewRole, RoleHostOverrides>>
+  concurrency: CrewConcurrencyConfig
 }
 
 export const ROLE_TIERS: Record<CrewRole, ReasoningTier> = {
@@ -34,40 +58,222 @@ const CLAUDE_TIER_DEFAULTS: Record<ReasoningTier, string> = {
   deep: 'opus',
 }
 
+const LITE_HOST_DEFAULTS: Record<HostId, string> = {
+  antigravity: 'flash_lite',
+  claude: 'haiku',
+  codex: 'o4-mini',
+  opencode: 'anthropic/claude-haiku-4-5',
+}
+
+const HARD_HOST_DEFAULTS: Record<HostId, string> = {
+  antigravity: 'pro',
+  claude: 'opus',
+  codex: 'o3',
+  opencode: 'anthropic/claude-opus-4-5',
+}
+
 export interface PresetBuildOptions {
   model?: string
+  localModel?: string
+  liteModel?: string
   fast?: string
   balanced?: string
   deep?: string
   hosts?: readonly HostId[]
+  concurrency?: Partial<CrewConcurrencyConfig>
 }
 
-function normalizeOllamaModel(raw: string): string {
+export function normalizeOllamaModel(raw: string): string {
   const trimmed = raw.trim()
   return trimmed.includes('/') ? trimmed : `ollama/${trimmed}`
 }
 
+function normalizeConcurrency(raw?: Partial<CrewConcurrencyConfig>): CrewConcurrencyConfig {
+  const mode: ConcurrencyMode =
+    raw?.mode === 'parallel' || raw?.mode === 'queue' || raw?.mode === 'mixed'
+      ? raw.mode
+      : DEFAULT_CONCURRENCY.mode
+  const maxLocalParallel =
+    typeof raw?.maxLocalParallel === 'number' &&
+    Number.isFinite(raw.maxLocalParallel) &&
+    raw.maxLocalParallel >= 1
+      ? Math.floor(raw.maxLocalParallel)
+      : DEFAULT_CONCURRENCY.maxLocalParallel
+  const overflowTarget: OverflowTarget =
+    raw?.overflowTarget === 'lite' || raw?.overflowTarget === 'any'
+      ? raw.overflowTarget
+      : DEFAULT_CONCURRENCY.overflowTarget
+  return { mode, maxLocalParallel, overflowTarget }
+}
+
+export function isLocalModelTag(modelTag?: string): boolean {
+  if (!modelTag) return false
+  const trimmed = modelTag.trim().toLowerCase()
+  if (
+    trimmed.startsWith('ollama/') ||
+    trimmed.startsWith('lmstudio/') ||
+    trimmed.startsWith('local/') ||
+    trimmed.startsWith('llamacpp/')
+  ) {
+    return true
+  }
+  if (/^(?:qwen|deepseek-r1|llama\d|mistral|codellama|gemma|phi\d|starcoder)/i.test(trimmed)) {
+    return true
+  }
+  return /:\d+(?:\.\d+)?b\b/i.test(trimmed)
+}
+
+export function hasLocalModels(config: CrewModelsConfig): {
+  hasLocal: boolean
+  primaryLocalModel?: string
+} {
+  const tierOrder: readonly ReasoningTier[] = ['fast', 'balanced', 'deep']
+  const hostOrder: readonly HostId[] = ['opencode', 'codex', 'claude', 'antigravity']
+
+  for (const tier of tierOrder) {
+    for (const host of hostOrder) {
+      const candidate = config.tiers?.[host]?.[tier]
+      if (candidate && isLocalModelTag(candidate)) {
+        return { hasLocal: true, primaryLocalModel: normalizeOllamaModel(candidate) }
+      }
+    }
+  }
+
+  for (const role of CREW_ROLES) {
+    const roleMap = config.overrides?.[role]
+    if (!roleMap) continue
+    for (const key of ['*', ...hostOrder] as const) {
+      const candidate = roleMap[key]
+      if (candidate && isLocalModelTag(candidate)) {
+        return { hasLocal: true, primaryLocalModel: normalizeOllamaModel(candidate) }
+      }
+    }
+  }
+
+  return { hasLocal: false }
+}
+
 export function buildPresetConfig(
-  preset: 'default' | 'ollama' | 'cloud-tiered',
+  preset: Exclude<ModelPresetName, 'custom'> | 'custom',
   options?: PresetBuildOptions,
 ): CrewModelsConfig {
   const now = new Date().toISOString()
+  const effectivePreset = preset === 'custom' ? 'hybrid' : preset
 
-  if (preset === 'default') {
+  if (effectivePreset === 'default') {
     return {
       updatedAt: now,
       preset: 'default',
       tiers: {},
       overrides: {},
+      concurrency: normalizeConcurrency({
+        mode: 'parallel',
+        maxLocalParallel: 1,
+        overflowTarget: 'lite',
+        ...options?.concurrency,
+      }),
     }
   }
 
-  if (preset === 'ollama') {
-    const fast = normalizeOllamaModel(options?.fast ?? options?.model ?? 'ollama/qwen2.5-coder:7b')
-    const balanced = normalizeOllamaModel(
-      options?.balanced ?? options?.model ?? 'ollama/qwen2.5-coder:14b',
+  if (effectivePreset === 'lite') {
+    const targetHosts: readonly HostId[] = options?.hosts ?? SUPPORTED_HOSTS
+    const tiers: Partial<Record<HostId, HostTierModels>> = {}
+    const customLite = options?.liteModel ?? options?.model
+    for (const h of targetHosts) {
+      const base = customLite ?? LITE_HOST_DEFAULTS[h]
+      tiers[h] = {
+        fast: options?.fast ?? base,
+        balanced: options?.balanced ?? base,
+        deep: options?.deep ?? base,
+      }
+    }
+    return {
+      updatedAt: now,
+      preset: 'lite',
+      tiers,
+      overrides: {},
+      concurrency: normalizeConcurrency({
+        mode: 'parallel',
+        maxLocalParallel: 1,
+        overflowTarget: 'lite',
+        ...options?.concurrency,
+      }),
+    }
+  }
+
+  if (effectivePreset === 'hard') {
+    const targetHosts: readonly HostId[] = options?.hosts ?? SUPPORTED_HOSTS
+    const tiers: Partial<Record<HostId, HostTierModels>> = {}
+    for (const h of targetHosts) {
+      const base = options?.model ?? HARD_HOST_DEFAULTS[h]
+      tiers[h] = {
+        fast: options?.fast ?? base,
+        balanced: options?.balanced ?? base,
+        deep: options?.deep ?? base,
+      }
+    }
+    return {
+      updatedAt: now,
+      preset: 'hard',
+      tiers,
+      overrides: {},
+      concurrency: normalizeConcurrency({
+        mode: 'parallel',
+        maxLocalParallel: 1,
+        overflowTarget: 'any',
+        ...options?.concurrency,
+      }),
+    }
+  }
+
+  if (effectivePreset === 'hybrid') {
+    const localFast = normalizeOllamaModel(
+      options?.fast ?? options?.localModel ?? options?.model ?? 'ollama/qwen2.5-coder:7b',
     )
-    const deep = normalizeOllamaModel(options?.deep ?? options?.model ?? 'ollama/deepseek-r1:32b')
+    const localBalanced = normalizeOllamaModel(
+      options?.balanced ?? options?.localModel ?? options?.model ?? 'ollama/qwen2.5-coder:7b',
+    )
+    const targetHosts: readonly HostId[] = options?.hosts ?? SUPPORTED_HOSTS
+    const tiers: Partial<Record<HostId, HostTierModels>> = {}
+    for (const h of targetHosts) {
+      if (h === 'antigravity') {
+        tiers.antigravity = {
+          fast: 'flash_lite',
+          balanced: 'flash_lite',
+          deep: 'flash_lite',
+        }
+      } else {
+        tiers[h] = {
+          fast: localFast,
+          balanced: localBalanced,
+          deep: options?.deep ?? options?.liteModel ?? LITE_HOST_DEFAULTS[h],
+        }
+      }
+    }
+    return {
+      updatedAt: now,
+      preset: 'hybrid',
+      tiers,
+      overrides: {},
+      concurrency: normalizeConcurrency({
+        mode: 'mixed',
+        maxLocalParallel: 1,
+        overflowTarget: 'lite',
+        ...options?.concurrency,
+      }),
+    }
+  }
+
+  if (effectivePreset === 'ollama') {
+    const fast = normalizeOllamaModel(
+      options?.fast ?? options?.localModel ?? options?.model ?? 'ollama/qwen2.5-coder:7b',
+    )
+    const balanced = normalizeOllamaModel(
+      options?.balanced ?? options?.localModel ?? options?.model ?? 'ollama/qwen2.5-coder:14b',
+    )
+    const deep = normalizeOllamaModel(
+      options?.deep ?? options?.localModel ?? options?.model ?? 'ollama/deepseek-r1:32b',
+    )
     const targetHosts: readonly HostId[] = options?.hosts ?? ['opencode', 'codex', 'claude']
     const tiers: Partial<Record<HostId, HostTierModels>> = {}
     for (const h of targetHosts) {
@@ -78,6 +284,12 @@ export function buildPresetConfig(
       preset: 'ollama',
       tiers,
       overrides: {},
+      concurrency: normalizeConcurrency({
+        mode: 'queue',
+        maxLocalParallel: 1,
+        overflowTarget: 'lite',
+        ...options?.concurrency,
+      }),
     }
   }
 
@@ -102,6 +314,12 @@ export function buildPresetConfig(
     preset: 'cloud-tiered',
     tiers,
     overrides: {},
+    concurrency: normalizeConcurrency({
+      mode: 'parallel',
+      maxLocalParallel: 1,
+      overflowTarget: 'lite',
+      ...options?.concurrency,
+    }),
   }
 }
 
@@ -143,6 +361,16 @@ export function modelsFilePath(runtime: SystemRuntime = new SystemRuntime()): st
   return path.join(runtime.configRoot, 'crewseb-models.json')
 }
 
+const VALID_PRESETS = new Set<ModelPresetName>([
+  'default',
+  'lite',
+  'hard',
+  'hybrid',
+  'ollama',
+  'cloud-tiered',
+  'custom',
+])
+
 export async function loadModelsConfig(
   runtime: SystemRuntime = new SystemRuntime(),
 ): Promise<CrewModelsConfig> {
@@ -153,17 +381,13 @@ export async function loadModelsConfig(
   try {
     const raw = JSON.parse(await readFile(file, 'utf8')) as Partial<CrewModelsConfig>
     const preset: ModelPresetName =
-      raw.preset === 'default' ||
-      raw.preset === 'ollama' ||
-      raw.preset === 'cloud-tiered' ||
-      raw.preset === 'custom'
-        ? raw.preset
-        : 'default'
+      raw.preset && VALID_PRESETS.has(raw.preset) ? raw.preset : 'default'
     return {
       updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : new Date().toISOString(),
       preset,
       tiers: raw.tiers && typeof raw.tiers === 'object' ? raw.tiers : {},
       overrides: raw.overrides && typeof raw.overrides === 'object' ? raw.overrides : {},
+      concurrency: normalizeConcurrency(raw.concurrency),
     }
   } catch {
     return buildPresetConfig('default')
@@ -178,6 +402,7 @@ export async function saveModelsConfig(
   await mkdir(path.dirname(file), { recursive: true })
   const payload: CrewModelsConfig = {
     ...config,
+    concurrency: normalizeConcurrency(config.concurrency),
     updatedAt: new Date().toISOString(),
   }
   await writeFile(file, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
@@ -203,6 +428,7 @@ export async function setRoleModel(
       ...current.overrides,
       [role]: roleOverrides,
     },
+    concurrency: current.concurrency,
   }
   const file = await saveModelsConfig(next, runtime)
   return { config: next, file }
@@ -228,13 +454,31 @@ export async function setTierModel(
     preset: 'custom',
     tiers: nextTiers,
     overrides: { ...current.overrides },
+    concurrency: current.concurrency,
+  }
+  const file = await saveModelsConfig(next, runtime)
+  return { config: next, file }
+}
+
+export async function setConcurrencyConfig(
+  patch: Partial<CrewConcurrencyConfig>,
+  runtime: SystemRuntime = new SystemRuntime(),
+): Promise<{ config: CrewModelsConfig; file: string }> {
+  const current = await loadModelsConfig(runtime)
+  const next: CrewModelsConfig = {
+    ...current,
+    updatedAt: new Date().toISOString(),
+    concurrency: normalizeConcurrency({
+      ...current.concurrency,
+      ...patch,
+    }),
   }
   const file = await saveModelsConfig(next, runtime)
   return { config: next, file }
 }
 
 export async function applyModelPreset(
-  preset: 'default' | 'ollama' | 'cloud-tiered',
+  preset: Exclude<ModelPresetName, 'custom'> | 'custom',
   options?: PresetBuildOptions,
   runtime: SystemRuntime = new SystemRuntime(),
 ): Promise<{ config: CrewModelsConfig; file: string }> {
@@ -291,6 +535,7 @@ export async function resetModelsConfig(
     preset: hasAny ? current.preset : 'default',
     tiers: nextTiers,
     overrides: nextOverrides,
+    concurrency: hasAny ? current.concurrency : DEFAULT_CONCURRENCY,
   }
   const file = await saveModelsConfig(next, runtime)
   return { config: next, file }

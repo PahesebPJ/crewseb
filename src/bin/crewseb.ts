@@ -9,13 +9,21 @@ import {
   wireSuccess,
 } from 'hubseb'
 import { analyzeBudget, buildAgents, CREW_ROLES, writeAgents } from '../build.ts'
+import { assessVramCapacity, detectGpu, validateLocalConcurrency } from '../gpu.ts'
 import {
   applyModelPreset,
+  type ConcurrencyMode,
+  type CrewConcurrencyConfig,
   effectiveDisplayModel,
+  hasLocalModels,
   loadModelsConfig,
+  type ModelPresetName,
   modelsFilePath,
+  normalizeOllamaModel,
+  type OverflowTarget,
   resetModelsConfig,
   ROLE_TIERS,
+  setConcurrencyConfig,
   setRoleModel,
   setTierModel,
 } from '../models.ts'
@@ -58,6 +66,21 @@ const VALUE_FLAGS = new Set([
   '--fast',
   '--balanced',
   '--deep',
+  '--mode',
+  '--max-local',
+  '--overflow',
+  '--local-model',
+  '--lite-model',
+])
+
+const VALID_PRESET_ARGS = new Set<ModelPresetName>([
+  'default',
+  'lite',
+  'hard',
+  'hybrid',
+  'ollama',
+  'cloud-tiered',
+  'custom',
 ])
 
 export interface CliResult {
@@ -71,12 +94,13 @@ export async function executeCrewCli(
   runtime: SystemRuntime = new SystemRuntime(),
 ): Promise<CliResult> {
   const jsonMode = argv.includes('--json')
+  const forceMode = argv.includes('--force')
   const selectedHosts = parseHostsOption(argv)
 
   const positional: string[] = []
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i]!
-    if (token === '--json') continue
+    if (token === '--json' || token === '--force') continue
     if (VALUE_FLAGS.has(token)) {
       i++
       continue
@@ -102,6 +126,29 @@ export async function executeCrewCli(
       stdout: `${BUNDLE_ID} v${VERSION}\nprovides: ${PROVIDES.join(', ')}\nconsumes: ${CONSUMES.join(', ')}\nsignals: ${SIGNALS.join(', ')}\n`,
       stderr: '',
     }
+  }
+
+  if (command === 'gpu') {
+    const modelOpt = parseFlagValue(argv, '--model') ?? 'ollama/qwen2.5-coder:7b'
+    const gpu = await detectGpu(runtime)
+    const assessment = assessVramCapacity(gpu, modelOpt)
+    if (jsonMode) {
+      return {
+        exitCode: 0,
+        stdout: serializeWire(wireSuccess('gpu', { gpu, assessment })),
+        stderr: '',
+      }
+    }
+    const lines = [
+      'Diagnóstico de GPU y capacidad VRAM para crewseb:',
+      `  GPU: ${gpu.name} (vendor=${gpu.vendor}, source=${gpu.source}, detected=${gpu.detected})`,
+      `  VRAM: ${gpu.vramMb} MB total | ${gpu.freeVramMb} MB libre`,
+      `  Modelo de referencia: ${assessment.modelTag} (~${assessment.weightsMb} MB pesos + ~${assessment.kvSlotMb} MB/agente)`,
+      `  Agentes locales simultáneos soportados: ${assessment.maxConcurrentAgents}`,
+      `  Modo de concurrencia recomendado: ${assessment.recommendedMode}`,
+      `  Resumen: ${assessment.summary}`,
+    ]
+    return { exitCode: 0, stdout: `${lines.join('\n')}\n`, stderr: '' }
   }
 
   if (command === 'build') {
@@ -188,6 +235,7 @@ export async function executeCrewCli(
             wireSuccess('models', {
               file: modelsFilePath(runtime),
               preset: config.preset,
+              concurrency: config.concurrency,
               config,
               matrix,
             }),
@@ -198,6 +246,7 @@ export async function executeCrewCli(
       const lines = [
         `Configuración de modelos de crewseb (preset: ${config.preset}):`,
         `  Archivo: ${modelsFilePath(runtime)}`,
+        `  Concurrencia: modo=${config.concurrency.mode} | maxLocalParallel=${config.concurrency.maxLocalParallel} | overflow=${config.concurrency.overflowTarget}`,
         '',
       ]
       for (const row of matrix) {
@@ -209,13 +258,10 @@ export async function executeCrewCli(
     }
 
     if (sub === 'preset') {
-      const presetName = positional[2] as 'default' | 'ollama' | 'cloud-tiered' | undefined
-      if (
-        !presetName ||
-        (presetName !== 'default' && presetName !== 'ollama' && presetName !== 'cloud-tiered')
-      ) {
+      const presetName = positional[2] as ModelPresetName | undefined
+      if (!presetName || !VALID_PRESET_ARGS.has(presetName)) {
         const msg =
-          'Usage: crewseb models preset <ollama|cloud-tiered|default> [--model <m>] [--fast <m>] [--balanced <m>] [--deep <m>]'
+          'Usage: crewseb models preset <default|lite|hard|hybrid|ollama|cloud-tiered> [--model <m>] [--local-model <m>] [--lite-model <m>] [--fast <m>] [--balanced <m>] [--deep <m>] [--mode <parallel|queue|mixed>] [--max-local <n>] [--overflow <lite|any>] [--force]'
         if (jsonMode) {
           return {
             exitCode: 2,
@@ -225,20 +271,114 @@ export async function executeCrewCli(
         }
         return { exitCode: 2, stdout: '', stderr: `${msg}\n` }
       }
+
       const modelOpt = parseFlagValue(argv, '--model')
+      const localModelOpt = parseFlagValue(argv, '--local-model')
+      const liteModelOpt = parseFlagValue(argv, '--lite-model')
       const fastOpt = parseFlagValue(argv, '--fast')
       const balancedOpt = parseFlagValue(argv, '--balanced')
       const deepOpt = parseFlagValue(argv, '--deep')
-      const targetPresetHosts =
-        hostFlag && hostFlag !== '*' ? [hostFlag] : undefined
+      const modeOpt = parseFlagValue(argv, '--mode') as ConcurrencyMode | undefined
+      const maxLocalRaw = parseFlagValue(argv, '--max-local')
+      const overflowOpt = parseFlagValue(argv, '--overflow') as OverflowTarget | undefined
+
+      if (modeOpt && modeOpt !== 'parallel' && modeOpt !== 'queue' && modeOpt !== 'mixed') {
+        const msg = `Invalid concurrency mode "${modeOpt}". Valid modes: parallel, queue, mixed`
+        if (jsonMode) {
+          return {
+            exitCode: 2,
+            stdout: serializeWire(wireFailure('models', 'INVALID_CONCURRENCY', msg)),
+            stderr: '',
+          }
+        }
+        return { exitCode: 2, stdout: '', stderr: `${msg}\n` }
+      }
+
+      if (overflowOpt && overflowOpt !== 'lite' && overflowOpt !== 'any') {
+        const msg = `Invalid overflow target "${overflowOpt}". Valid overflow targets: lite, any`
+        if (jsonMode) {
+          return {
+            exitCode: 2,
+            stdout: serializeWire(wireFailure('models', 'INVALID_CONCURRENCY', msg)),
+            stderr: '',
+          }
+        }
+        return { exitCode: 2, stdout: '', stderr: `${msg}\n` }
+      }
+
+      let maxLocalNum: number | undefined
+      if (maxLocalRaw !== undefined) {
+        const parsed = Number(maxLocalRaw)
+        if (!Number.isInteger(parsed) || parsed < 1) {
+          const msg = `Invalid --max-local value "${maxLocalRaw}". Must be an integer >= 1`
+          if (jsonMode) {
+            return {
+              exitCode: 2,
+              stdout: serializeWire(wireFailure('models', 'INVALID_CONCURRENCY', msg)),
+              stderr: '',
+            }
+          }
+          return { exitCode: 2, stdout: '', stderr: `${msg}\n` }
+        }
+        maxLocalNum = parsed
+      }
+
+      const isLocalPreset =
+        presetName === 'ollama' || presetName === 'hybrid' || presetName === 'custom'
+      const concurrencyPatch: Partial<CrewConcurrencyConfig> = {}
+      if (modeOpt) concurrencyPatch.mode = modeOpt
+      if (overflowOpt) concurrencyPatch.overflowTarget = overflowOpt
+
+      if (isLocalPreset || maxLocalNum !== undefined) {
+        const refLocalModel = normalizeOllamaModel(
+          fastOpt ?? localModelOpt ?? modelOpt ?? 'ollama/qwen2.5-coder:7b',
+        )
+        const gpu = await detectGpu(runtime)
+        const assessment = assessVramCapacity(gpu, refLocalModel)
+
+        if (maxLocalNum !== undefined || (isLocalPreset && modeOpt === 'parallel')) {
+          const requestedParallel = maxLocalNum ?? 2
+          const validation = validateLocalConcurrency({
+            gpu,
+            requestedParallel,
+            modelTag: refLocalModel,
+            force: forceMode,
+          })
+          if (!validation.allowed) {
+            const errMsg = validation.reason ?? 'VRAM limit exceeded for local model concurrency'
+            if (jsonMode) {
+              return {
+                exitCode: 2,
+                stdout: serializeWire(wireFailure('models', 'VRAM_LIMIT_EXCEEDED', errMsg)),
+                stderr: '',
+              }
+            }
+            return { exitCode: 2, stdout: '', stderr: `${errMsg}\n` }
+          }
+        }
+
+        if (maxLocalNum !== undefined) {
+          concurrencyPatch.maxLocalParallel = maxLocalNum
+        } else if (isLocalPreset) {
+          concurrencyPatch.maxLocalParallel =
+            assessment.maxConcurrentAgents > 0
+              ? Math.max(1, Math.min(assessment.maxConcurrentAgents, 2))
+              : 1
+        }
+      }
+
+      const targetPresetHosts = hostFlag && hostFlag !== '*' ? [hostFlag] : undefined
       const { config } = await applyModelPreset(
         presetName,
         {
           ...(modelOpt ? { model: modelOpt } : {}),
+          ...(localModelOpt ? { localModel: localModelOpt } : {}),
+          ...(liteModelOpt ? { liteModel: liteModelOpt } : {}),
           ...(fastOpt ? { fast: fastOpt } : {}),
           ...(balancedOpt ? { balanced: balancedOpt } : {}),
           ...(deepOpt ? { deep: deepOpt } : {}),
           ...(targetPresetHosts ? { hosts: targetPresetHosts } : {}),
+          ...(Object.keys(concurrencyPatch).length > 0 ? { concurrency: concurrencyPatch } : {}),
         },
         runtime,
       )
@@ -248,7 +388,97 @@ export async function executeCrewCli(
       }
       return {
         exitCode: 0,
-        stdout: `Applied model preset "${presetName}" (${outcome.modelsFile}) and redeployed across ${outcome.receipts.length} host(s).\n`,
+        stdout: `Applied model preset "${config.preset}" [mode=${config.concurrency.mode}, maxLocal=${config.concurrency.maxLocalParallel}] (${outcome.modelsFile}) and redeployed across ${outcome.receipts.length} host(s).\n`,
+        stderr: '',
+      }
+    }
+
+    if (sub === 'concurrency') {
+      const modeArg = positional[2] as ConcurrencyMode | undefined
+      const maxLocalRaw = parseFlagValue(argv, '--max-local')
+      const overflowOpt = parseFlagValue(argv, '--overflow') as OverflowTarget | undefined
+
+      if (!modeArg || (modeArg !== 'parallel' && modeArg !== 'queue' && modeArg !== 'mixed')) {
+        const msg =
+          'Usage: crewseb models concurrency <parallel|queue|mixed> [--max-local <n>] [--overflow <lite|any>] [--force]'
+        if (jsonMode) {
+          return {
+            exitCode: 2,
+            stdout: serializeWire(wireFailure('models', 'INVALID_CONCURRENCY', msg)),
+            stderr: '',
+          }
+        }
+        return { exitCode: 2, stdout: '', stderr: `${msg}\n` }
+      }
+
+      if (overflowOpt && overflowOpt !== 'lite' && overflowOpt !== 'any') {
+        const msg = `Invalid overflow target "${overflowOpt}". Valid overflow targets: lite, any`
+        if (jsonMode) {
+          return {
+            exitCode: 2,
+            stdout: serializeWire(wireFailure('models', 'INVALID_CONCURRENCY', msg)),
+            stderr: '',
+          }
+        }
+        return { exitCode: 2, stdout: '', stderr: `${msg}\n` }
+      }
+
+      let maxLocalNum: number | undefined
+      if (maxLocalRaw !== undefined) {
+        const parsed = Number(maxLocalRaw)
+        if (!Number.isInteger(parsed) || parsed < 1) {
+          const msg = `Invalid --max-local value "${maxLocalRaw}". Must be an integer >= 1`
+          if (jsonMode) {
+            return {
+              exitCode: 2,
+              stdout: serializeWire(wireFailure('models', 'INVALID_CONCURRENCY', msg)),
+              stderr: '',
+            }
+          }
+          return { exitCode: 2, stdout: '', stderr: `${msg}\n` }
+        }
+        maxLocalNum = parsed
+      }
+
+      const current = await loadModelsConfig(runtime)
+      const gpu = await detectGpu(runtime)
+      const localInfo = hasLocalModels(current)
+      const refModel = localInfo.primaryLocalModel ?? 'ollama/qwen2.5-coder:7b'
+
+      if (maxLocalNum !== undefined || (modeArg === 'parallel' && localInfo.hasLocal)) {
+        const requestedParallel = maxLocalNum ?? 2
+        const validation = validateLocalConcurrency({
+          gpu,
+          requestedParallel,
+          modelTag: refModel,
+          force: forceMode,
+        })
+        if (!validation.allowed) {
+          const errMsg = validation.reason ?? 'VRAM limit exceeded for local model concurrency'
+          if (jsonMode) {
+            return {
+              exitCode: 2,
+              stdout: serializeWire(wireFailure('models', 'VRAM_LIMIT_EXCEEDED', errMsg)),
+              stderr: '',
+            }
+          }
+          return { exitCode: 2, stdout: '', stderr: `${errMsg}\n` }
+        }
+      }
+
+      const patch: Partial<CrewConcurrencyConfig> = {
+        mode: modeArg,
+        ...(maxLocalNum !== undefined ? { maxLocalParallel: maxLocalNum } : {}),
+        ...(overflowOpt ? { overflowTarget: overflowOpt } : {}),
+      }
+      const { config } = await setConcurrencyConfig(patch, runtime)
+      const outcome = await syncModelsAndDeploy(config, { runtime, hosts: selectedHosts })
+      if (jsonMode) {
+        return { exitCode: 0, stdout: serializeWire(wireSuccess('models', outcome)), stderr: '' }
+      }
+      return {
+        exitCode: 0,
+        stdout: `Updated concurrency policy → mode=${config.concurrency.mode}, maxLocalParallel=${config.concurrency.maxLocalParallel}, overflow=${config.concurrency.overflowTarget} and redeployed.\n`,
         stderr: '',
       }
     }
@@ -330,7 +560,7 @@ export async function executeCrewCli(
       }
     }
 
-    const msg = `Unknown models subcommand "${sub}". Valid: list, preset, set, set-tier, reset`
+    const msg = `Unknown models subcommand "${sub}". Valid: list, preset, concurrency, set, set-tier, reset`
     if (jsonMode) {
       return {
         exitCode: 2,
@@ -458,7 +688,8 @@ export async function executeCrewCli(
       '  crewseb setup [--agents a,b|all]   Attach to hubseb topology & deploy across detected hosts',
       '  crewseb roster [--json]            Display the 10 specialists and their active random names',
       '  crewseb reroll [role] [--json]     Roll new random persona names and redeploy',
-      '  crewseb models [list|preset|set|set-tier|reset]  Configure custom/local (Ollama) models per role or tier',
+      '  crewseb models [list|preset|concurrency|set|set-tier|reset]  Configure models, presets (default|lite|hard|hybrid|ollama|cloud-tiered) & concurrency',
+      '  crewseb gpu [--model <tag>] [--json]  Detect GPU VRAM capacity and recommended local concurrency',
       '  crewseb budget [--json]            Audit token/character budget across all 10 specialists',
       '  crewseb check [--json]             Verify SHA-256 integrity of directives across hosts',
       '  crewseb build [--json]             Compile src/agents/*.md into targets/{antigravity,claude,codex,opencode}/',
@@ -475,6 +706,7 @@ export async function executeCrewCli(
               'roster',
               'reroll',
               'models',
+              'gpu',
               'budget',
               'check',
               'build',

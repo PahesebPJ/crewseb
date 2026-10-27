@@ -18,6 +18,7 @@ import {
   buildAgents,
   PROTOCOLS_DIR,
   RULES_FILE,
+  renderSkillMarkdown,
   SKILL_DIR,
   SOURCE_DIR,
   writeAgents,
@@ -57,7 +58,8 @@ export async function assembleBundlePayload(
   const specialists = built.map((b) => parseSpecialistMarkdown(b.content, 'claude'))
   const globalDirectives = await readFile(RULES_FILE, 'utf8')
   const alwaysOnRules = await readFile(ANTIGRAVITY_RULES_FILE, 'utf8')
-  const skillMd = await readFile(path.join(SKILL_DIR, 'SKILL.md'), 'utf8')
+  const rawSkillMd = await readFile(path.join(SKILL_DIR, 'SKILL.md'), 'utf8')
+  const skillMd = renderSkillMarkdown(rawSkillMd, activeModels)
 
   return {
     bundleId: BUNDLE_ID,
