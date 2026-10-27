@@ -1,6 +1,6 @@
 {
   "name": "crewseb",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Specialist subagent crew with random personas, shared engineering protocols, and multi-host compilation for Antigravity CLI, Claude Code, Codex, and OpenCode.",
   "license": "MIT",
   "author": "PahesebPJ",
