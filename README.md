@@ -78,7 +78,7 @@ crewseb uninstall [--json]                                    # Purga subagentes
 | **`default`** | Configuración estándar inicial | `inherit` | `sonnet` (`balanced`) / `opus` (`deep`) | `inherit` | `inherit` |
 | **`lite`** | Máximo ahorro de tokens y velocidad (`fast` en todos los tiers) | `flash_lite` | `haiku` | `o4-mini` | `anthropic/claude-haiku-4-5` |
 | **`hard`** | Máxima capacidad y razonamiento profundo (`deep` en todos los tiers) | `pro` | `opus` | `o3` | `anthropic/claude-opus-4-5` |
-| **`hybrid`** | Mixto: modelos locales (`fast`/`balanced`) + modelos ligeros en nube (`deep` / `agy`) | `flash_lite` | Local (`7b`/`14b`) + `haiku` en `deep` | Local (`7b`/`14b`) + `o4-mini` en `deep` | Local (`7b`/`14b`) + `claude-haiku-4-5` en `deep` |
+| **`hybrid`** | Mixto: modelos locales (`fast`/`balanced`) + modelos ligeros en nube (`deep` / `agy`) | `flash_lite` | Local (`qwen2.5-coder:7b`) + `haiku` en `deep` | Local (`ollama/qwen2.5-coder:7b`) + `o4-mini` en `deep` | Local (`ollama/qwen2.5-coder:7b`) + `claude-haiku-4-5` en `deep` |
 | **`ollama`** | 100% subagentes locales con Ollama por tier | `inherit` (fallback) | `qwen2.5-coder:7b` / `14b` / `deepseek-r1:32b` | `ollama/qwen2.5-coder:7b` / `14b` / `deepseek-r1:32b` | `ollama/qwen2.5-coder:7b` / `14b` / `deepseek-r1:32b` |
 | **`cloud-tiered`** | Escalonado completo en la nube según tier (`fast` / `balanced` / `deep`) | `flash_lite` / `flash` / `pro` | `haiku` / `sonnet` / `opus` | `o4-mini` / `gpt-5.4` / `o3` | `claude-haiku-4-5` / `sonnet-4-5` / `opus-4-5` |
 | **`custom`** | Personalización libre por rol (`set`) o por tier (`set-tier`) | Según override | Según override | Según override | Según override |
@@ -104,7 +104,7 @@ crewseb uninstall [--json]                                    # Purga subagentes
    ```
 
 4. **Configuración `hybrid` / `custom` (Mixta: modelos locales + modelos lite):**
-   Combina subagentes locales en los tiers `fast` y `balanced` (por defecto `ollama/qwen2.5-coder:7b` y `ollama/qwen2.5-coder:14b`) con modelos ligeros en la nube para `deep` y Antigravity (`flash_lite`, `haiku`, `o4-mini`, `anthropic/claude-haiku-4-5`). Además, activa automáticamente el modo de concurrencia **`mixed`** (respetando el límite de tu GPU y desbordando a modelos `lite`).
+   Combina subagentes locales en los tiers `fast` y `balanced` (por defecto `ollama/qwen2.5-coder:7b`) con modelos ligeros en la nube para `deep` y Antigravity (`flash_lite`, `haiku`, `o4-mini`, `anthropic/claude-haiku-4-5`). Además, activa automáticamente el modo de concurrencia **`mixed`** (respetando el límite de tu GPU y desbordando a modelos `lite`).
    ```sh
    # Activar perfil híbrido (local + lite)
    crewseb models preset hybrid
