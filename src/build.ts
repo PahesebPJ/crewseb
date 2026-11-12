@@ -8,6 +8,7 @@ import {
   type ReasoningTier,
   SUPPORTED_HOSTS,
 } from 'hubseb'
+import { type CrewLimitsConfig, resolveRoleMaxSteps } from './limits.ts'
 import { type CrewModelsConfig, resolveRoleModels, ROLE_TIERS } from './models.ts'
 import {
   CREW_ROLES,
@@ -43,6 +44,7 @@ export function renderAgent(
   protocols: ReadonlyMap<string, string>,
   personas: Readonly<Record<CrewRole, string>> = DEFAULT_PERSONAS,
   modelsConfig?: CrewModelsConfig,
+  limitsConfig?: CrewLimitsConfig,
 ): string {
   const personaName = personas[role] ?? DEFAULT_PERSONAS[role]
   const lines = source.split(/\r?\n/).map((line) => {
@@ -60,6 +62,18 @@ export function renderAgent(
   })
 
   let rendered = `${lines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd()}\n`
+
+  if (limitsConfig) {
+    const resolvedSteps = resolveRoleMaxSteps(role, limitsConfig)
+    if (/^maxSteps:\s*\d+/m.test(rendered)) {
+      rendered = rendered.replace(/^maxSteps:\s*\d+/m, `maxSteps: ${resolvedSteps}`)
+    } else {
+      const fmMatch = /^---\r?\n([\s\S]*?)\r?\n---(\r?\n[\s\S]*)$/.exec(rendered)
+      if (fmMatch) {
+        rendered = `---\n${fmMatch[1]}\nmaxSteps: ${resolvedSteps}\n---${fmMatch[2]}`
+      }
+    }
+  }
 
   if (modelsConfig) {
     const fmMatch = /^---\r?\n([\s\S]*?)\r?\n---(\r?\n[\s\S]*)$/.exec(rendered)
@@ -120,6 +134,7 @@ export async function buildAgents(
   sourceDir: string = SOURCE_DIR,
   protocolsDir: string = PROTOCOLS_DIR,
   modelsConfig?: CrewModelsConfig,
+  limitsConfig?: CrewLimitsConfig,
 ): Promise<BuiltAgent[]> {
   const protocols = await loadProtocols(protocolsDir)
   const built: BuiltAgent[] = []
@@ -129,7 +144,7 @@ export async function buildAgents(
     built.push({
       name: role,
       personaName: personas[role] ?? DEFAULT_PERSONAS[role],
-      content: renderAgent(role, raw, protocols, personas, modelsConfig),
+      content: renderAgent(role, raw, protocols, personas, modelsConfig, limitsConfig),
     })
   }
   return built
@@ -178,8 +193,10 @@ export interface BudgetReport {
 
 export async function analyzeBudget(
   personas: Readonly<Record<CrewRole, string>> = DEFAULT_PERSONAS,
+  modelsConfig?: CrewModelsConfig,
+  limitsConfig?: CrewLimitsConfig,
 ): Promise<BudgetReport> {
-  const built = await buildAgents(personas)
+  const built = await buildAgents(personas, undefined, undefined, modelsConfig, limitsConfig)
   const entries: AgentBudgetEntry[] = []
   let totalDescriptionChars = 0
 
