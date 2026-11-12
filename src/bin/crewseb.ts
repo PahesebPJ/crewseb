@@ -29,6 +29,14 @@ import {
 } from '../models.ts'
 import { type CrewRole, loadPersonas, ROLE_META } from '../personas.ts'
 import {
+  DEFAULT_ROLE_LIMITS,
+  limitsFilePath,
+  loadLimitsConfig,
+  resetLimitsConfig,
+  resolveRoleMaxSteps,
+  setRoleLimit,
+} from '../limits.ts'
+import {
   auditCrewsebDirectives,
   BUNDLE_ID,
   CONSUMES,
@@ -37,6 +45,7 @@ import {
   purgeCrewseb,
   rerollAndDeploy,
   SIGNALS,
+  syncLimitsAndDeploy,
   syncModelsAndDeploy,
 } from '../setup.ts'
 import { VERSION } from '../version.ts'
@@ -154,7 +163,8 @@ export async function executeCrewCli(
   if (command === 'build') {
     const personas = await loadPersonas(runtime)
     const modelsConfig = await loadModelsConfig(runtime)
-    const built = await buildAgents(personas, undefined, undefined, modelsConfig)
+    const limitsConfig = await loadLimitsConfig(runtime)
+    const built = await buildAgents(personas, undefined, undefined, modelsConfig, limitsConfig)
     await writeAgents(built)
     if (jsonMode) {
       return {
@@ -571,6 +581,152 @@ export async function executeCrewCli(
     return { exitCode: 2, stdout: '', stderr: `${msg}\n` }
   }
 
+  if (command === 'limits' || command === 'turns') {
+    const sub = positional[1] ?? 'list'
+
+    if (sub === 'list') {
+      const config = await loadLimitsConfig(runtime)
+      const personas = await loadPersonas(runtime)
+      const matrix = CREW_ROLES.map((role) => ({
+        role,
+        persona: personas[role],
+        icon: ROLE_META[role].icon,
+        tier: ROLE_TIERS[role],
+        maxSteps: resolveRoleMaxSteps(role, config),
+        defaultMaxSteps: DEFAULT_ROLE_LIMITS[role],
+      }))
+      if (jsonMode) {
+        return {
+          exitCode: 0,
+          stdout: serializeWire(
+            wireSuccess('limits', {
+              file: limitsFilePath(runtime),
+              defaultMaxSteps: config.defaultMaxSteps,
+              config,
+              matrix,
+            }),
+          ),
+          stderr: '',
+        }
+      }
+      const lines = [
+        'Límites de turnos (maxSteps) de la tripulación crewseb:',
+        `  Archivo: ${limitsFilePath(runtime)}`,
+        `  Límite global por defecto: ${config.defaultMaxSteps} pasos`,
+        '',
+      ]
+      for (const m of matrix) {
+        const customBadge = m.maxSteps !== m.defaultMaxSteps ? ` (custom, default=${m.defaultMaxSteps})` : ''
+        lines.push(
+          `  ${m.icon}  ${m.persona.padEnd(10)} · ${m.role.padEnd(15)} [${m.tier.padEnd(8)}] -> ${String(m.maxSteps).padStart(2)} pasos${customBadge}`,
+        )
+      }
+      return { exitCode: 0, stdout: `${lines.join('\n')}\n`, stderr: '' }
+    }
+
+    if (sub === 'set') {
+      const target = positional[2] as CrewRole | 'all' | 'default' | undefined
+      const stepsRaw = positional[3]
+      if (!target || !stepsRaw) {
+        const msg = 'Usage: crewseb limits set <role|all|default> <maxSteps>'
+        if (jsonMode) {
+          return {
+            exitCode: 2,
+            stdout: serializeWire(wireFailure('limits', 'INVALID_ARGS', msg)),
+            stderr: '',
+          }
+        }
+        return { exitCode: 2, stdout: '', stderr: `${msg}\n` }
+      }
+      const steps = Number.parseInt(stepsRaw, 10)
+      if (Number.isNaN(steps) || steps <= 0) {
+        const msg = `Invalid maxSteps "${stepsRaw}". Must be a positive integer.`
+        if (jsonMode) {
+          return {
+            exitCode: 2,
+            stdout: serializeWire(wireFailure('limits', 'INVALID_STEP_COUNT', msg)),
+            stderr: '',
+          }
+        }
+        return { exitCode: 2, stdout: '', stderr: `${msg}\n` }
+      }
+
+      let updatedConfig
+      try {
+        updatedConfig = await setRoleLimit(target, steps, runtime)
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (jsonMode) {
+          return {
+            exitCode: 2,
+            stdout: serializeWire(wireFailure('limits', 'INVALID_TARGET', msg)),
+            stderr: '',
+          }
+        }
+        return { exitCode: 2, stdout: '', stderr: `${msg}\n` }
+      }
+
+      const outcome = await syncLimitsAndDeploy(updatedConfig, {
+        runtime,
+        hosts: selectedHosts,
+      })
+      if (jsonMode) {
+        return {
+          exitCode: 0,
+          stdout: serializeWire(
+            wireSuccess('limits', {
+              target,
+              maxSteps: steps,
+              config: outcome.config,
+              hosts: outcome.receipts.map((r) => r.hostId),
+            }),
+          ),
+          stderr: '',
+        }
+      }
+      return {
+        exitCode: 0,
+        stdout: `Configurado límite para "${target}" a ${steps} pasos y redesplegado en hosts (${outcome.receipts.map((r) => r.hostId).join(', ')}).\n`,
+        stderr: '',
+      }
+    }
+
+    if (sub === 'reset') {
+      const resetConfig = await resetLimitsConfig(runtime)
+      const outcome = await syncLimitsAndDeploy(resetConfig, {
+        runtime,
+        hosts: selectedHosts,
+      })
+      if (jsonMode) {
+        return {
+          exitCode: 0,
+          stdout: serializeWire(
+            wireSuccess('limits', {
+              config: outcome.config,
+              hosts: outcome.receipts.map((r) => r.hostId),
+            }),
+          ),
+          stderr: '',
+        }
+      }
+      return {
+        exitCode: 0,
+        stdout: `Restablecidos límites de turnos a los valores predeterminados y redesplegados en hosts (${outcome.receipts.map((r) => r.hostId).join(', ')}).\n`,
+        stderr: '',
+      }
+    }
+
+    const msg = `Unknown limits subcommand "${sub}". Valid: list, set, reset`
+    if (jsonMode) {
+      return {
+        exitCode: 2,
+        stdout: serializeWire(wireFailure('limits', 'UNKNOWN_SUBCOMMAND', msg)),
+        stderr: '',
+      }
+    }
+    return { exitCode: 2, stdout: '', stderr: `${msg}\n` }
+  }
+
   if (command === 'reroll') {
     const targetRole = positional[1] as CrewRole | undefined
     if (targetRole && !CREW_ROLES.includes(targetRole)) {
@@ -607,7 +763,9 @@ export async function executeCrewCli(
 
   if (command === 'budget') {
     const personas = await loadPersonas(runtime)
-    const report = await analyzeBudget(personas)
+    const modelsConfig = await loadModelsConfig(runtime)
+    const limitsConfig = await loadLimitsConfig(runtime)
+    const report = await analyzeBudget(personas, modelsConfig, limitsConfig)
     if (jsonMode) {
       return {
         exitCode: report.withinBudget ? 0 : 1,
@@ -689,6 +847,7 @@ export async function executeCrewCli(
       '  crewseb roster [--json]            Display the 10 specialists and their active random names',
       '  crewseb reroll [role] [--json]     Roll new random persona names and redeploy',
       '  crewseb models [list|preset|concurrency|set|set-tier|reset]  Configure models, presets (default|lite|hard|hybrid|ollama|cloud-tiered) & concurrency',
+      '  crewseb limits [list|set|reset] [--json]  Configure specialist maxSteps/turn limits (alias: crewseb turns)',
       '  crewseb gpu [--model <tag>] [--json]  Detect GPU VRAM capacity and recommended local concurrency',
       '  crewseb budget [--json]            Audit token/character budget across all 10 specialists',
       '  crewseb check [--json]             Verify SHA-256 integrity of directives across hosts',
@@ -706,6 +865,7 @@ export async function executeCrewCli(
               'roster',
               'reroll',
               'models',
+              'limits',
               'gpu',
               'budget',
               'check',

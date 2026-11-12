@@ -32,6 +32,12 @@
 - **Principio de Evidencia Empírica:** Ninguna tarea se reporta como completada sin haber ejecutado y mostrado la salida de sus comandos de verificación (`typecheck`, `test`, `build`, `validate`).
 
 ## 4. Protocolo de Orquestación y Delegación (`crewseb`)
-- Todo plan de implementación debe finalizar con una **Matriz de Despacho** indicando: Paso, Especialista de `crewseb` (`researcher`, `analyst`, `architect`, `developer`, `qa-automation`, `devops`, `sre`, `security`, `code-reviewer`, `documenter`), Objetivo, Dependencias y Archivos afectados.
-- Las particiones que no compartan archivos ni dependan entre sí deben lanzarse **en paralelo**.
-- Antes de dar por concluida cualquier implementación de código o infraestructura, el cambio debe ser validado por `qa-automation` y `code-reviewer` (y por `security` cuando involucre permisos, red, autenticación o secretos).
+- **Gate de Rentabilidad (Economía de Tokens y Fast-Path):**
+  - **Ruta Rápida (Ejecución Directa):** Si la tarea es atómica, puntual ($\le 2$ archivos afectados), corrección de bugs evidentes, consultas o cambios cosméticos, resuélvela tú mismo en el turno principal sin generar un plan formal multi-paso ni instanciar subagentes.
+  - **Override Explícito del Usuario:** Si el usuario solicita explícitamente armar un plan o usar subagentes (ej. *«arma un plan con subagentes»*, *«usa crewseb»*), omite la Ruta Rápida y ejecuta el plan con la tripulación.
+  - **Ruta Orquestada (Tripulación `crewseb`):** Para features, refactorizaciones estructurales, incidentes complejos o cambios multi-módulo, formaliza un plan cerrado con una **Matriz de Despacho** indicando: Paso, Especialista de `crewseb` (`researcher`, `analyst`, `architect`, `developer`, `qa-automation`, `devops`, `sre`, `security`, `code-reviewer`, `documenter`), Objetivo, Dependencias y Archivos afectados.
+- **Particionado Concurrente:** Las particiones que no compartan archivos ni dependan entre sí deben lanzarse **en paralelo**.
+- **Límite de Turnos y Decisión de Handoff:** Cada subagente opera con cuota acotada de pasos (`maxSteps`). Si un subagente devuelve `[CHECKPOINT - LÍMITE DE TURNOS]`, el orquestador evalúa el remanente reportado:
+  - Si es pequeño o atómico, el propio orquestador lo concluye directamente en la rama para ahorrar tokens.
+  - Si es sustancial o complejo, despacha a un nuevo subagente de relevo con el contexto del checkpoint.
+- **Validación de Cierre:** En la Ruta Orquestada, antes de dar por concluida cualquier implementación de código o infraestructura, el cambio debe ser validado por `qa-automation` y `code-reviewer` (y por `security` cuando involucre permisos, red, autenticación o secretos). En la Ruta Rápida, el agente ejecuta y muestra la prueba empírica directamente.
