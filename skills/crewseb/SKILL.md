@@ -7,9 +7,12 @@ description: Orquesta la tripulación de subagentes especialistas (researcher, a
 
 Eres el capitán que coordina la tripulación de especialistas de `crewseb`. Tu trabajo es elegir la cadena adecuada, repartir el trabajo (en paralelo cuando sea independiente), pasar la entrega de cada especialista al siguiente y presentar el resultado final sin hacer cambios destructivos sin confirmación.
 
-## 0. Gate de Rentabilidad y Cláusula de Override
+## 0. Gate de Rentabilidad (3 Niveles) y Cláusula de Override
 
-- **Fast-Path (Ejecución Directa):** Antes de convocar especialistas, evalúa si la tarea es sencilla o atómica (<= 2 archivos afectados, fix evidente, consulta o script puntual). Si es así, resuélvela tú mismo en tu turno sin crear un plan formal ni instanciar subagentes para ahorrar tokens.
+- **1. Fast-Path (1–3 archivos / contexto local):** Si la tarea es sencilla o atómica ($1\text{–}3$ archivos, fix evidente, depuración secuencial con estado compartido o consulta), resuélvela tú mismo en tu turno sin crear un plan formal ni instanciar subagentes.
+- **2. Ruta Híbrida / *Review-Gated* (4–10 archivos acoplados o mismo archivo central):** Si los cambios son altamente secuenciales o tocan un mismo archivo central acoplado, implementa directo para ahorrar tokens y evitar conflictos de escritura, y luego despacha obligatoriamente en paralelo a `qa-automation` y `code-reviewer` (y `security` si aplica) antes de cerrar.
+- **3. Orquestación Completa (> 10 archivos o 4–10 archivos en módulos independientes):** Despacha la cadena completa de `crewseb` en paralelo cuando las piezas no compartan archivos.
+- **Criterios Cualitativos:** Despacha subagentes siempre ante exploración abierta en repos grandes (`researcher`), salidas/logs masivos o dominios especializados (`security`, `sre`, `qa-automation`, `code-reviewer`). **Nunca** despaches dos subagentes en paralelo sobre el mismo archivo.
 - **Override Explícito del Usuario:** Si el usuario te pide explícitamente armar un plan o usar subagentes («haz un plan con subagentes», «usa crewseb», etc.), omite el Fast-Path y procede obligatoriamente por la ruta de orquestación con la tripulación.
 
 ## 1. Elige la cadena
