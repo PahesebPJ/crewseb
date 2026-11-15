@@ -49,10 +49,21 @@ crewseb models concurrency <parallel|queue|mixed> [opciones]  # Configura cómo 
 crewseb models set <rol> <modelo> [--host <host>]             # Fija un modelo personalizado para un rol (perfil custom)
 crewseb models set-tier <fast|balanced|deep> <modelo> [--host <host>] # Fija el modelo de un tier de razonamiento (perfil custom)
 crewseb models reset [rol] [--host <host>]                    # Restaura la configuración de modelos por defecto
+crewseb models set <rol> <modelo> --host <h> [--effort <low|medium|high|xhigh|max|none>] [--tier <inherit|flash_lite|flash|pro>]
+crewseb models effort <rol> <esfuerzo|none> [--host <host>]          # Esfuerzo por rol y host
+crewseb models route <rol> <claude|agy|none>                         # Host que ejecuta el rol (delegación vía sebshell)
+crewseb models catalog [--host <h>] [--refresh]                      # Modelos disponibles (agy se descubre en vivo; p. ej. gemini-4-hydrogen)
+crewseb models resolve [rol] [--json]                                # Matriz efectiva: modelo nativo, esfuerzo y dónde se aplica
 crewseb budget [--json]                                       # Verifica el presupuesto de tokens/caracteres de toda la tripulación
 crewseb check [--json]                                        # Verifica la integridad SHA-256 de las directivas en cada host
 crewseb uninstall [--json]                                    # Purga subagentes, reglas, skills y desconecta el nodo de hubseb
 ```
+
+### Modelo, esfuerzo y ruteo por subagente (0.4.0)
+
+- **Claude Code** recibe en el frontmatter el modelo y el esfuerzo concretos (`model: claude-opus-5-5`, `effort: max`).
+- **Antigravity** solo admite tiers en el frontmatter (`inherit|flash_lite|flash|pro`); un ID concreto hace que su loader descarte el agente. Los modelos concretos como `gemini-4-hydrogen` con esfuerzo `xhigh` se guardan y los aplica [sebshell](https://github.com/PahesebPJ/sebshell) al invocar el rol; `--tier` fija el tier que usan los subagentes que agy lanza por su cuenta.
+- **Ruteo**: `crewseb models route developer agy` añade a las directivas de Claude una tabla que le indica delegar ese rol con la herramienta MCP `seb_delegate` de sebshell.
 
 ## La Tripulación (10 Roles)
 
