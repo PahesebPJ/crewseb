@@ -47,6 +47,10 @@ const payload = <T>(stdout: string): T => {
 
 beforeEach(async () => {
   tmp = await mkdtemp(path.join(os.tmpdir(), 'crewseb-effort-'))
+  // Simulate a machine with both hosts installed: crewseb detects a host by its config root,
+  // and CI runners have neither claude nor agy on PATH.
+  await mkdir(path.join(tmp, '.claude'), { recursive: true })
+  await mkdir(path.join(tmp, '.gemini', 'config'), { recursive: true })
   runtime = new SystemRuntime({
     homeDir: tmp,
     env: {
