@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { describe, it } from 'node:test'
+import { after, describe, it } from 'node:test'
 import {
   analyzeBudget,
   buildAgents,
   CREW_ROLES,
   RULES_FILE,
   TARGET_AGENTS,
-  TARGETS_DIR,
   writeAgents,
 } from '../src/build.ts'
 import { DEFAULT_PERSONAS } from '../src/personas.ts'
@@ -18,7 +18,9 @@ describe('crewseb subagents, protocols, 4-target compilation & context budget', 
   it('builds all 10 specialist subagents with {{protocol:...}} and {{persona:badge}} and generates all 4 agent targets', async () => {
     const built = await buildAgents(DEFAULT_PERSONAS)
     assert.equal(built.length, 10)
-    await writeAgents(built)
+    const outDir = await mkdtemp(path.join(tmpdir(), 'crewseb-build-'))
+    after(() => rm(outDir, { recursive: true, force: true }))
+    await writeAgents(built, path.join(outDir, 'subagents'), path.join(outDir, 'targets'))
 
     const names = built.map((b) => b.name).sort()
     assert.deepEqual(names, [...CREW_ROLES].sort())
@@ -51,7 +53,7 @@ describe('crewseb subagents, protocols, 4-target compilation & context budget', 
     for (const target of TARGET_AGENTS) {
       const ext = target === 'codex' ? '.toml' : '.md'
       for (const role of CREW_ROLES) {
-        const file = path.join(TARGETS_DIR, target, `${role}${ext}`)
+        const file = path.join(outDir, 'targets', target, `${role}${ext}`)
         assert.ok(existsSync(file), `missing compiled target file: ${file}`)
       }
     }

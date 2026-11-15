@@ -5,7 +5,7 @@ import path from 'node:path'
 import { describe, it } from 'node:test'
 import { SUPPORTED_HOSTS, SystemRuntime } from 'hubseb'
 import { executeCrewCli } from '../src/bin/crewseb.ts'
-import { buildAgents, renderSkillMarkdown, SKILL_DIR, writeAgents } from '../src/build.ts'
+import { renderSkillMarkdown, SKILL_DIR } from '../src/build.ts'
 import { assessVramCapacity, detectGpu, estimateModelVramMb, validateLocalConcurrency } from '../src/gpu.ts'
 import {
   applyModelPreset,
@@ -103,7 +103,6 @@ describe('crewseb custom and local (Ollama) models engine & CLI', () => {
       )
       assert.match(agyDevPro, /^model:\s*pro$/m)
     } finally {
-      await writeAgents(await buildAgents(DEFAULT_PERSONAS))
       await rm(tmpDir, { recursive: true, force: true })
     }
   })
@@ -216,7 +215,6 @@ describe('crewseb custom and local (Ollama) models engine & CLI', () => {
       assert.equal(customHybrid.tiers.opencode?.balanced, 'ollama/qwen2.5-coder:14b')
       assert.equal(customHybrid.tiers.claude?.deep, 'anthropic/claude-haiku-4-5')
     } finally {
-      await writeAgents(await buildAgents(DEFAULT_PERSONAS))
       await rm(tmpDir, { recursive: true, force: true })
     }
   })
@@ -372,7 +370,6 @@ describe('crewseb custom and local (Ollama) models engine & CLI', () => {
       assert.equal(directBlock.allowed, false)
       assert.equal(directBlock.maxSupportedParallel, 1)
     } finally {
-      await writeAgents(await buildAgents(DEFAULT_PERSONAS))
       await rm(tmpDir, { recursive: true, force: true })
     }
   })
@@ -422,7 +419,6 @@ describe('crewseb custom and local (Ollama) models engine & CLI', () => {
       assert.match(mixedAnyMd, /Modo Mixto Activo \(`mixed`, maxLocal=1, overflow=any\)/)
       assert.match(mixedAnyMd, /usando agentes ligeros \(cualquier modelo disponible\)/)
     } finally {
-      await writeAgents(await buildAgents(DEFAULT_PERSONAS))
       await rm(tmpDir, { recursive: true, force: true })
     }
   })
@@ -560,7 +556,6 @@ describe('crewseb custom and local (Ollama) models engine & CLI', () => {
       assert.equal(badMaxLocal.exitCode, 2)
       assert.equal(JSON.parse(badMaxLocal.stdout).fault.code, 'INVALID_CONCURRENCY')
     } finally {
-      await writeAgents(await buildAgents(DEFAULT_PERSONAS))
       await rm(tmpDir, { recursive: true, force: true })
     }
   })

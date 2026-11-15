@@ -8,8 +8,8 @@ import {
   type ReasoningTier,
   SUPPORTED_HOSTS,
 } from 'hubseb'
-import { type CrewLimitsConfig, resolveRoleMaxSteps } from './limits.ts'
-import { type CrewModelsConfig, resolveNativeModel, resolveRoleEffort, ROLE_TIERS } from './models.ts'
+import { type CrewLimitsConfig, defaultLimitsConfig, resolveRoleMaxSteps } from './limits.ts'
+import { buildPresetConfig, type CrewModelsConfig, resolveNativeModel, resolveRoleEffort, ROLE_TIERS } from './models.ts'
 import {
   CREW_ROLES,
   type CrewRole,
@@ -152,6 +152,11 @@ export async function buildAgents(
     })
   }
   return built
+}
+
+/** What ships in subagents/ and targets/: independent of the user's personas, models and limits (prepack runs it). */
+export function buildPackagedAgents(): Promise<BuiltAgent[]> {
+  return buildAgents(DEFAULT_PERSONAS, SOURCE_DIR, PROTOCOLS_DIR, buildPresetConfig('default'), defaultLimitsConfig())
 }
 
 export async function writeAgents(
