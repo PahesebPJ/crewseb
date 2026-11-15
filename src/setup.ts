@@ -30,6 +30,7 @@ import {
   saveLimitsConfig,
 } from './limits.ts'
 import { type CrewModelsConfig, loadModelsConfig, saveModelsConfig } from './models.ts'
+import { renderRoutingDirectives } from './routing.ts'
 import { type CrewRole, ensurePersonas, loadPersonas, rerollPersonas } from './personas.ts'
 import { PACKAGE_ROOT, VERSION } from './version.ts'
 
@@ -64,7 +65,7 @@ export async function assembleBundlePayload(
   const activeLimits = limitsConfig ?? (await loadLimitsConfig(runtime))
   const built = await buildAgents(activePersonas, SOURCE_DIR, PROTOCOLS_DIR, activeModels, activeLimits)
   const specialists = built.map((b) => parseSpecialistMarkdown(b.content, 'claude'))
-  const globalDirectives = await readFile(RULES_FILE, 'utf8')
+  const globalDirectives = renderRoutingDirectives(await readFile(RULES_FILE, 'utf8'), activeModels)
   const alwaysOnRules = await readFile(ANTIGRAVITY_RULES_FILE, 'utf8')
   const rawSkillMd = await readFile(path.join(SKILL_DIR, 'SKILL.md'), 'utf8')
   const skillMd = renderSkillMarkdown(rawSkillMd, activeModels)
@@ -245,6 +246,7 @@ export async function auditCrewsebDirectives(
 ): Promise<HostIntegrityReport[]> {
   const runtime = options.runtime ?? new SystemRuntime()
   const driverHub = new DriverHub(runtime, options.roots)
-  const rawDirectives = await readFile(RULES_FILE, 'utf8')
+  // Must render exactly like deploy does, or routed roles would always report "drifted".
+  const rawDirectives = renderRoutingDirectives(await readFile(RULES_FILE, 'utf8'), await loadModelsConfig(runtime))
   return driverHub.auditHosts(BUNDLE_ID, rawDirectives, options.hosts)
 }
