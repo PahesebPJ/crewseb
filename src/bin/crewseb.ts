@@ -8,7 +8,7 @@ import {
   wireFailure,
   wireSuccess,
 } from 'hubseb'
-import { analyzeBudget, buildAgents, CREW_ROLES, writeAgents } from '../build.ts'
+import { analyzeBudget, buildPackagedAgents, CREW_ROLES, writeAgents } from '../build.ts'
 import { assessVramCapacity, detectGpu, validateLocalConcurrency } from '../gpu.ts'
 import {
   applyModelPreset,
@@ -165,10 +165,7 @@ export async function executeCrewCli(
   }
 
   if (command === 'build') {
-    const personas = await loadPersonas(runtime)
-    const modelsConfig = await loadModelsConfig(runtime)
-    const limitsConfig = await loadLimitsConfig(runtime)
-    const built = await buildAgents(personas, undefined, undefined, modelsConfig, limitsConfig)
+    const built = await buildPackagedAgents()
     await writeAgents(built)
     if (jsonMode) {
       return {

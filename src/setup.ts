@@ -21,7 +21,6 @@ import {
   renderSkillMarkdown,
   SKILL_DIR,
   SOURCE_DIR,
-  writeAgents,
 } from './build.ts'
 import {
   type CrewLimitsConfig,
@@ -105,9 +104,6 @@ export async function deployCrewseb(options: CrewSetupOptions = {}): Promise<Cre
   const personas = await ensurePersonas(runtime, options.rng)
   const modelsConfig = await loadModelsConfig(runtime)
   const limitsConfig = await loadLimitsConfig(runtime)
-  const built = await buildAgents(personas, SOURCE_DIR, PROTOCOLS_DIR, modelsConfig, limitsConfig)
-  await writeAgents(built)
-
   const topology = new TopologyStore(runtime)
   const { file: topologyFile } = await topology.attachNode(nodeRegistration())
 
@@ -139,9 +135,6 @@ export async function rerollAndDeploy(
   const { personas, file: personasFile } = await rerollPersonas(targetRole, runtime, options.rng)
   const modelsConfig = await loadModelsConfig(runtime)
   const limitsConfig = await loadLimitsConfig(runtime)
-  const built = await buildAgents(personas, SOURCE_DIR, PROTOCOLS_DIR, modelsConfig, limitsConfig)
-  await writeAgents(built)
-
   const driverHub = new DriverHub(runtime, options.roots)
   const payload = await assembleBundlePayload(personas, runtime, modelsConfig, limitsConfig)
   const receipts = await driverHub.deployToHosts(payload, options.hosts)
@@ -171,9 +164,6 @@ export async function syncModelsAndDeploy(
   const modelsFile = await saveModelsConfig(config, runtime)
   const personas = await loadPersonas(runtime)
   const limitsConfig = await loadLimitsConfig(runtime)
-  const built = await buildAgents(personas, SOURCE_DIR, PROTOCOLS_DIR, config, limitsConfig)
-  await writeAgents(built)
-
   const driverHub = new DriverHub(runtime, options.roots)
   const payload = await assembleBundlePayload(personas, runtime, config, limitsConfig)
   const receipts = await driverHub.deployToHosts(payload, options.hosts)
@@ -204,9 +194,6 @@ export async function syncLimitsAndDeploy(
   const limitsFile = limitsFilePath(runtime)
   const personas = await loadPersonas(runtime)
   const modelsConfig = await loadModelsConfig(runtime)
-  const built = await buildAgents(personas, SOURCE_DIR, PROTOCOLS_DIR, modelsConfig, config)
-  await writeAgents(built)
-
   const driverHub = new DriverHub(runtime, options.roots)
   const payload = await assembleBundlePayload(personas, runtime, modelsConfig, config)
   const receipts = await driverHub.deployToHosts(payload, options.hosts)
