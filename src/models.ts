@@ -504,7 +504,9 @@ export async function applyModelPreset(
   options?: PresetBuildOptions,
   runtime: SystemRuntime = new SystemRuntime(),
 ): Promise<{ config: CrewModelsConfig; file: string }> {
-  const next = buildPresetConfig(preset, options)
+  // A preset replaces tier/role models; per-role efforts, agy tiers and routing are kept.
+  const current = await loadModelsConfig(runtime)
+  const next: CrewModelsConfig = { ...buildPresetConfig(preset, options), ...normalizeRoleExtras(current) }
   const file = await saveModelsConfig(next, runtime)
   return { config: next, file }
 }
@@ -698,7 +700,13 @@ export function setRoleEffort(role: CrewRole, effort: EffortLevel | null, host: 
   return updateConfig(runtime, (c) => {
     const map = { ...(c.efforts?.[role] ?? {}) }
     if (effort) map[host] = effort
-    else delete map[host]
+    else if (host !== '*' && map['*']) {
+      // Clearing one host must not let it inherit the '*' value: expand '*' to the other hosts.
+      const wildcard = map['*']
+      delete map['*']
+      for (const h of SUPPORTED_HOSTS) if (h !== host && !map[h]) map[h] = wildcard
+      delete map[host]
+    } else delete map[host]
     if (Object.keys(map).length > 0) c.efforts![role] = map
     else delete c.efforts![role]
   })

@@ -132,6 +132,7 @@ describe('per-role effort, agy tier and routing', () => {
     assert.equal((await cli('models', 'set', 'developer', 'opus', '--host', 'antigravity', '--tier', 'ultra')).exitCode, 2)
     assert.equal((await cli('models', 'set', 'developer', 'opus', '--host', 'claude', '--tier', 'pro')).exitCode, 2)
     assert.equal((await cli('models', 'route', 'developer', 'mars')).exitCode, 2)
+    assert.equal((await cli('models', 'route', 'developer', 'codex')).exitCode, 2, 'sebshell cannot delegate to codex')
   })
 
   it('routes roles: Claude directives tell the orchestrator to use seb_delegate, and the audit stays verified', async () => {
@@ -160,6 +161,25 @@ describe('per-role effort, agy tier and routing', () => {
     config = await loadModelsConfig(runtime)
     assert.equal(config.efforts?.architect, undefined)
     assert.equal(config.routing?.researcher, 'antigravity', 'routing survives a model reset')
+  })
+
+  it('clearing one host effort does not inherit the wildcard, and presets keep routing/efforts', async () => {
+    await setRoleEffort('developer', 'high', '*', runtime)
+    await setRoleEffort('developer', null, 'claude', runtime)
+    const r = resolveRole('developer', await loadModelsConfig(runtime))
+    assert.deepEqual([r.hosts.claude.effort, r.hosts.antigravity.effort], [null, 'high'])
+    await setRoleRouting('developer', 'antigravity', runtime)
+    await cli('models', 'preset', 'lite')
+    const after = await loadModelsConfig(runtime)
+    assert.equal(after.preset, 'lite')
+    assert.equal(after.routing?.developer, 'antigravity')
+    assert.equal(after.efforts?.developer?.antigravity, 'high')
+  })
+
+  it('accepts --effort none on set', async () => {
+    await cli('models', 'set', 'sre', 'sonnet', '--host', 'claude', '--effort', 'high')
+    await cli('models', 'set', 'sre', 'sonnet', '--host', 'claude', '--effort', 'none')
+    assert.equal(resolveRole('sre', await loadModelsConfig(runtime)).hosts.claude.effort, null)
   })
 
   it('drops invalid hand-edited entries', () => {

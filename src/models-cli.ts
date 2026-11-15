@@ -4,7 +4,6 @@ import {
   isAgyTier,
   isEffortLevel,
   serializeWire,
-  SUPPORTED_HOSTS,
   SystemRuntime,
   wireFailure,
   wireSuccess,
@@ -53,9 +52,10 @@ function isRole(v: unknown): v is CrewRole {
   return typeof v === 'string' && (CREW_ROLES as readonly string[]).includes(v)
 }
 
-function parseHost(v: string | undefined): HostId | null {
-  if (v === 'agy' || v === 'gemini') return 'antigravity'
-  return (SUPPORTED_HOSTS as readonly string[]).includes(v ?? '') ? (v as HostId) : null
+/** Only hosts sebshell can execute are valid routing targets (codex/opencode cannot be delegated to). */
+function parseRouteHost(v: string | undefined): HostId | null {
+  if (v === 'agy' || v === 'gemini' || v === 'antigravity') return 'antigravity'
+  return v === 'claude' ? 'claude' : null
 }
 
 async function deploy(ctx: ModelsCliContext, config: CrewModelsConfig, text: string, warnings: string[]): Promise<ModelsCliResult> {
@@ -85,7 +85,7 @@ export async function runExtendedModelsCommand(ctx: ModelsCliContext): Promise<M
     if (!isRole(role) || !model) {
       return fail(ctx, 'INVALID_ARGS', `Uso: crewseb models set <rol> <modelo> [--host <host>] [--effort <${EFFORT_LEVELS.join('|')}>] [--tier <inherit|flash_lite|flash|pro>]. Roles: ${CREW_ROLES.join(', ')}`)
     }
-    if (effortArg !== undefined && !isEffortLevel(effortArg)) return fail(ctx, 'INVALID_EFFORT', `Esfuerzo inválido "${effortArg}". Válidos: ${EFFORT_LEVELS.join(', ')}`)
+    if (effortArg !== undefined && effortArg !== 'none' && !isEffortLevel(effortArg)) return fail(ctx, 'INVALID_EFFORT', `Esfuerzo inválido "${effortArg}". Válidos: ${EFFORT_LEVELS.join(', ')}, none`)
     if (tierArg !== undefined && !isAgyTier(tierArg)) return fail(ctx, 'INVALID_TIER', `Tier de agy inválido "${tierArg}". Válidos: inherit, flash_lite, flash, pro`)
     const host = ctx.hostFlag ?? '*'
     if (tierArg && host !== 'antigravity') return fail(ctx, 'INVALID_ARGS', '--tier solo aplica con --host antigravity')
@@ -96,7 +96,7 @@ export async function runExtendedModelsCommand(ctx: ModelsCliContext): Promise<M
       if (check.warning) warnings.push(check.warning)
     }
     let { config } = await setRoleModel(role, model, host, runtime)
-    if (effortArg) ({ config } = await setRoleEffort(role, effortArg, host, runtime))
+    if (effortArg) ({ config } = await setRoleEffort(role, isEffortLevel(effortArg) ? effortArg : null, host, runtime))
     if (tierArg) ({ config } = await setRoleAgyTier(role, tierArg, runtime))
     const agy = resolveRole(role, config).hosts.antigravity
     if ((host === 'antigravity' || host === '*') && agy.appliedAt === 'invocation') {
@@ -119,8 +119,8 @@ export async function runExtendedModelsCommand(ctx: ModelsCliContext): Promise<M
     const role = positional[2]
     const target = positional[3]
     if (!isRole(role) || !target) return fail(ctx, 'INVALID_ARGS', 'Uso: crewseb models route <rol> <claude|antigravity|agy|none>')
-    const host = target === 'none' ? null : parseHost(target)
-    if (target !== 'none' && !host) return fail(ctx, 'INVALID_HOST', `Host inválido "${target}"`)
+    const host = target === 'none' ? null : parseRouteHost(target)
+    if (target !== 'none' && !host) return fail(ctx, 'INVALID_HOST', `Host inválido "${target}": solo claude o agy pueden recibir delegaciones (sebshell)`)
     const { config } = await setRoleRouting(role, host, runtime)
     return deploy(ctx, config, host ? `${role} se ejecutará en ${host} (vía seb_delegate)` : `${role} se ejecutará en el host orquestador`, [])
   }
