@@ -19,6 +19,7 @@ import {
   loadModelsConfig,
   type ModelPresetName,
   modelsFilePath,
+  resolveRole,
   normalizeOllamaModel,
   type OverflowTarget,
   resetModelsConfig,
@@ -48,6 +49,7 @@ import {
   syncLimitsAndDeploy,
   syncModelsAndDeploy,
 } from '../setup.ts'
+import { runExtendedModelsCommand } from '../models-cli.ts'
 import { VERSION } from '../version.ts'
 
 function parseHostsOption(args: readonly string[]): HostId[] | undefined {
@@ -80,6 +82,8 @@ const VALUE_FLAGS = new Set([
   '--overflow',
   '--local-model',
   '--lite-model',
+  '--effort',
+  '--tier',
 ])
 
 const VALID_PRESET_ARGS = new Set<ModelPresetName>([
@@ -220,6 +224,9 @@ export async function executeCrewCli(
       return { exitCode: 2, stdout: '', stderr: `${msg}\n` }
     }
 
+    const extended = await runExtendedModelsCommand({ sub, positional, argv, runtime, jsonMode, hostFlag, selectedHosts })
+    if (extended) return extended
+
     if (sub === 'list') {
       const config = await loadModelsConfig(runtime)
       const personas = await loadPersonas(runtime)
@@ -260,8 +267,11 @@ export async function executeCrewCli(
         '',
       ]
       for (const row of matrix) {
+        const r = resolveRole(row.role, config)
+        const fx = (h: HostId) => (r.hosts[h].effort ? `@${r.hosts[h].effort}` : '')
+        const agy = r.hosts.antigravity.appliedAt === 'invocation' ? `${row.models.antigravity}${fx('antigravity')} (nativo ${r.hosts.antigravity.native})` : `${r.hosts.antigravity.native}`
         lines.push(
-          `  ${row.icon}  ${row.role.padEnd(14)} [${row.tier.padEnd(8)}] → opencode=${row.models.opencode} | codex=${row.models.codex} | claude=${row.models.claude} | agy=${row.models.antigravity}`,
+          `  ${row.icon}  ${row.role.padEnd(14)} [${row.tier.padEnd(8)}]${r.runsOn ? ` ⇢ ${r.runsOn}` : ''} → opencode=${row.models.opencode} | codex=${row.models.codex} | claude=${row.models.claude}${fx('claude')} | agy=${agy}`,
         )
       }
       return { exitCode: 0, stdout: `${lines.join('\n')}\n`, stderr: '' }
@@ -493,32 +503,6 @@ export async function executeCrewCli(
       }
     }
 
-    if (sub === 'set') {
-      const role = positional[2] as CrewRole | undefined
-      const model = positional[3]
-      if (!role || !CREW_ROLES.includes(role) || !model) {
-        const msg = `Usage: crewseb models set <role> <model> [--host <host>]. Valid roles: ${CREW_ROLES.join(', ')}`
-        if (jsonMode) {
-          return {
-            exitCode: 2,
-            stdout: serializeWire(wireFailure('models', 'INVALID_ARGS', msg)),
-            stderr: '',
-          }
-        }
-        return { exitCode: 2, stdout: '', stderr: `${msg}\n` }
-      }
-      const { config } = await setRoleModel(role, model, hostFlag ?? '*', runtime)
-      const outcome = await syncModelsAndDeploy(config, { runtime, hosts: selectedHosts })
-      if (jsonMode) {
-        return { exitCode: 0, stdout: serializeWire(wireSuccess('models', outcome)), stderr: '' }
-      }
-      return {
-        exitCode: 0,
-        stdout: `Updated model for ${role} (${hostFlag ?? 'all hosts'}) → ${model} and redeployed.\n`,
-        stderr: '',
-      }
-    }
-
     if (sub === 'set-tier') {
       const tier = positional[2] as ReasoningTier | undefined
       const model = positional[3]
@@ -570,7 +554,7 @@ export async function executeCrewCli(
       }
     }
 
-    const msg = `Unknown models subcommand "${sub}". Valid: list, preset, concurrency, set, set-tier, reset`
+    const msg = `Unknown models subcommand "${sub}". Valid: list, preset, concurrency, set, set-tier, effort, route, catalog, resolve, reset`
     if (jsonMode) {
       return {
         exitCode: 2,
@@ -846,7 +830,7 @@ export async function executeCrewCli(
       '  crewseb setup [--agents a,b|all]   Attach to hubseb topology & deploy across detected hosts',
       '  crewseb roster [--json]            Display the 10 specialists and their active random names',
       '  crewseb reroll [role] [--json]     Roll new random persona names and redeploy',
-      '  crewseb models [list|preset|concurrency|set|set-tier|reset]  Configure models, presets (default|lite|hard|hybrid|ollama|cloud-tiered) & concurrency',
+      '  crewseb models [list|preset|concurrency|set|set-tier|effort|route|catalog|resolve|reset]  Configure models, presets (default|lite|hard|hybrid|ollama|cloud-tiered) & concurrency',
       '  crewseb limits [list|set|reset] [--json]  Configure specialist maxSteps/turn limits (alias: crewseb turns)',
       '  crewseb gpu [--model <tag>] [--json]  Detect GPU VRAM capacity and recommended local concurrency',
       '  crewseb budget [--json]            Audit token/character budget across all 10 specialists',

@@ -1,6 +1,6 @@
 {
   "name": "crewseb",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Specialist subagent crew with random personas, shared engineering protocols, and multi-host compilation for Antigravity CLI, Claude Code, Codex, and OpenCode.",
   "license": "MIT",
   "author": "PahesebPJ",
@@ -40,7 +40,7 @@
     "crewseb": "node src/bin/crewseb.ts"
   },
   "dependencies": {
-    "hubseb": "^0.3.0"
+    "hubseb": "^0.4.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

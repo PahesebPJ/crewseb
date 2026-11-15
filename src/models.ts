@@ -1,7 +1,16 @@
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { type HostId, type ReasoningTier, SUPPORTED_HOSTS, SystemRuntime } from 'hubseb'
+import {
+  type AgyModelTier,
+  type EffortLevel,
+  type HostId,
+  isAgyTier,
+  isEffortLevel,
+  type ReasoningTier,
+  SUPPORTED_HOSTS,
+  SystemRuntime,
+} from 'hubseb'
 import { CREW_ROLES, type CrewRole } from './personas.ts'
 
 export type ModelPresetName =
@@ -31,13 +40,25 @@ export const DEFAULT_CONCURRENCY: CrewConcurrencyConfig = {
 export type HostTierModels = Partial<Record<ReasoningTier, string>>
 export type RoleHostOverrides = Partial<Record<HostId | '*', string>>
 
+export type RoleHostEfforts = Partial<Record<HostId | '*', EffortLevel>>
+
 export interface CrewModelsConfig {
   updatedAt: string
   preset: ModelPresetName
   tiers: Partial<Record<HostId, HostTierModels>>
   overrides: Partial<Record<CrewRole, RoleHostOverrides>>
   concurrency: CrewConcurrencyConfig
+  /** Reasoning effort per role and host ('*' = every host). */
+  efforts?: Partial<Record<CrewRole, RoleHostEfforts>>
+  /**
+   * Native agy tier written to the agent frontmatter when the role's agy model is a concrete id
+   * (agy only accepts tiers there); the concrete model + effort are applied at invocation.
+   */
+  agyTiers?: Partial<Record<CrewRole, AgyModelTier>>
+  /** Host that executes the role when another host orchestrates (delegated through sebshell). */
+  routing?: Partial<Record<CrewRole, HostId>>
 }
+
 
 export const ROLE_TIERS: Record<CrewRole, ReasoningTier> = {
   researcher: 'balanced',
@@ -388,6 +409,7 @@ export async function loadModelsConfig(
       tiers: raw.tiers && typeof raw.tiers === 'object' ? raw.tiers : {},
       overrides: raw.overrides && typeof raw.overrides === 'object' ? raw.overrides : {},
       concurrency: normalizeConcurrency(raw.concurrency),
+      ...normalizeRoleExtras(raw),
     }
   } catch {
     return buildPresetConfig('default')
@@ -421,6 +443,7 @@ export async function setRoleModel(
     [host]: model.trim(),
   }
   const next: CrewModelsConfig = {
+    ...current,
     updatedAt: new Date().toISOString(),
     preset: 'custom',
     tiers: { ...current.tiers },
@@ -428,7 +451,6 @@ export async function setRoleModel(
       ...current.overrides,
       [role]: roleOverrides,
     },
-    concurrency: current.concurrency,
   }
   const file = await saveModelsConfig(next, runtime)
   return { config: next, file }
@@ -450,11 +472,11 @@ export async function setTierModel(
     }
   }
   const next: CrewModelsConfig = {
+    ...current,
     updatedAt: new Date().toISOString(),
     preset: 'custom',
     tiers: nextTiers,
     overrides: { ...current.overrides },
-    concurrency: current.concurrency,
   }
   const file = await saveModelsConfig(next, runtime)
   return { config: next, file }
@@ -482,7 +504,9 @@ export async function applyModelPreset(
   options?: PresetBuildOptions,
   runtime: SystemRuntime = new SystemRuntime(),
 ): Promise<{ config: CrewModelsConfig; file: string }> {
-  const next = buildPresetConfig(preset, options)
+  // A preset replaces tier/role models; per-role efforts, agy tiers and routing are kept.
+  const current = await loadModelsConfig(runtime)
+  const next: CrewModelsConfig = { ...buildPresetConfig(preset, options), ...normalizeRoleExtras(current) }
   const file = await saveModelsConfig(next, runtime)
   return { config: next, file }
 }
@@ -529,14 +553,175 @@ export async function resetModelsConfig(
     }
   }
 
-  const hasAny = Object.keys(nextTiers).length > 0 || Object.keys(nextOverrides).length > 0
+  // Resetting a role's models also clears its effort and agy tier, but never its routing.
+  const nextEfforts = { ...(current.efforts ?? {}) }
+  const nextAgyTiers = { ...(current.agyTiers ?? {}) }
+  if (role) {
+    if (host && host !== '*') {
+      const e = { ...(nextEfforts[role] ?? {}) }
+      delete e[host]
+      if (Object.keys(e).length > 0) nextEfforts[role] = e
+      else delete nextEfforts[role]
+      if (host === 'antigravity') delete nextAgyTiers[role]
+    } else {
+      delete nextEfforts[role]
+      delete nextAgyTiers[role]
+    }
+  }
+
+  const hasAny =
+    Object.keys(nextTiers).length > 0 ||
+    Object.keys(nextOverrides).length > 0 ||
+    Object.keys(nextEfforts).length > 0 ||
+    Object.keys(nextAgyTiers).length > 0 ||
+    Object.keys(current.routing ?? {}).length > 0
   const next: CrewModelsConfig = {
     updatedAt: new Date().toISOString(),
     preset: hasAny ? current.preset : 'default',
     tiers: nextTiers,
     overrides: nextOverrides,
     concurrency: hasAny ? current.concurrency : DEFAULT_CONCURRENCY,
+    ...(Object.keys(nextEfforts).length > 0 ? { efforts: nextEfforts } : {}),
+    ...(Object.keys(nextAgyTiers).length > 0 ? { agyTiers: nextAgyTiers } : {}),
+    ...(current.routing && Object.keys(current.routing).length > 0 ? { routing: current.routing } : {}),
   }
   const file = await saveModelsConfig(next, runtime)
   return { config: next, file }
+}
+
+function isRole(value: unknown): value is CrewRole {
+  return typeof value === 'string' && (CREW_ROLES as readonly string[]).includes(value)
+}
+
+function isHostId(value: unknown): value is HostId {
+  return typeof value === 'string' && (SUPPORTED_HOSTS as readonly string[]).includes(value)
+}
+
+/** Validates the optional per-role fields; invalid entries are dropped, never trusted. */
+export function normalizeRoleExtras(raw: Partial<CrewModelsConfig>): Pick<CrewModelsConfig, 'efforts' | 'agyTiers' | 'routing'> {
+  const out: Pick<CrewModelsConfig, 'efforts' | 'agyTiers' | 'routing'> = {}
+  if (raw.efforts && typeof raw.efforts === 'object') {
+    const efforts: Partial<Record<CrewRole, RoleHostEfforts>> = {}
+    for (const [role, map] of Object.entries(raw.efforts)) {
+      if (!isRole(role) || !map || typeof map !== 'object') continue
+      const clean: RoleHostEfforts = {}
+      for (const [h, e] of Object.entries(map)) {
+        if ((h === '*' || isHostId(h)) && isEffortLevel(e)) clean[h as HostId | '*'] = e
+      }
+      if (Object.keys(clean).length > 0) efforts[role] = clean
+    }
+    if (Object.keys(efforts).length > 0) out.efforts = efforts
+  }
+  if (raw.agyTiers && typeof raw.agyTiers === 'object') {
+    const tiers: Partial<Record<CrewRole, AgyModelTier>> = {}
+    for (const [role, t] of Object.entries(raw.agyTiers)) if (isRole(role) && isAgyTier(t)) tiers[role] = t
+    if (Object.keys(tiers).length > 0) out.agyTiers = tiers
+  }
+  if (raw.routing && typeof raw.routing === 'object') {
+    const routing: Partial<Record<CrewRole, HostId>> = {}
+    for (const [role, h] of Object.entries(raw.routing)) if (isRole(role) && isHostId(h)) routing[role] = h
+    if (Object.keys(routing).length > 0) out.routing = routing
+  }
+  return out
+}
+
+export function resolveRoleEffort(role: CrewRole, host: HostId, config?: CrewModelsConfig): EffortLevel | undefined {
+  const map = config?.efforts?.[role]
+  return map?.[host] ?? map?.['*']
+}
+
+/** Model written to the host's agent frontmatter (agy: always a native tier). */
+export function resolveNativeModel(role: CrewRole, tier: ReasoningTier, host: HostId, config?: CrewModelsConfig): string | undefined {
+  const concrete = resolveRoleModels(role, tier, config)[host]
+  if (host !== 'antigravity') return concrete
+  if (isAgyTier(concrete)) return concrete
+  // Same as hubseb's historical behaviour: a non-tier value becomes 'inherit' unless the user
+  // pinned a native tier for this role with `--tier`.
+  return config?.agyTiers?.[role] ?? 'inherit'
+}
+
+export interface RoleHostResolution {
+  /** Model as configured (concrete id or tier alias). */
+  model: string
+  /** What the host's native frontmatter gets. */
+  native: string
+  effort: EffortLevel | null
+  /** 'frontmatter' when native subagents already honor it; 'invocation' when only sebshell can apply it. */
+  appliedAt: 'frontmatter' | 'invocation'
+}
+
+export interface RoleResolution {
+  role: CrewRole
+  tier: ReasoningTier
+  runsOn: HostId | null
+  hosts: Record<HostId, RoleHostResolution>
+}
+
+/** Full per-role matrix consumed by sebshell (`crewseb models resolve --json`). */
+export function resolveRole(role: CrewRole, config?: CrewModelsConfig): RoleResolution {
+  const tier = ROLE_TIERS[role]
+  const hosts = {} as Record<HostId, RoleHostResolution>
+  for (const host of SUPPORTED_HOSTS) {
+    const model = effectiveDisplayModel(role, tier, host, config)
+    const native = resolveNativeModel(role, tier, host, config) ?? model
+    const effort = resolveRoleEffort(role, host, config) ?? null
+    const concreteAgy = host === 'antigravity' && !isAgyTier(model)
+    hosts[host] = {
+      model,
+      native,
+      effort,
+      appliedAt: concreteAgy || (host === 'antigravity' && effort) ? 'invocation' : 'frontmatter',
+    }
+  }
+  return { role, tier, runsOn: config?.routing?.[role] ?? null, hosts }
+}
+
+async function updateConfig(
+  runtime: SystemRuntime,
+  mutate: (c: CrewModelsConfig) => void,
+): Promise<{ config: CrewModelsConfig; file: string }> {
+  const current = await loadModelsConfig(runtime)
+  const next: CrewModelsConfig = {
+    ...current,
+    efforts: { ...(current.efforts ?? {}) },
+    agyTiers: { ...(current.agyTiers ?? {}) },
+    routing: { ...(current.routing ?? {}) },
+  }
+  mutate(next)
+  for (const key of ['efforts', 'agyTiers', 'routing'] as const) {
+    if (next[key] && Object.keys(next[key] as object).length === 0) delete next[key]
+  }
+  next.updatedAt = new Date().toISOString()
+  const file = await saveModelsConfig(next, runtime)
+  return { config: next, file }
+}
+
+export function setRoleEffort(role: CrewRole, effort: EffortLevel | null, host: HostId | '*' = '*', runtime: SystemRuntime = new SystemRuntime()) {
+  return updateConfig(runtime, (c) => {
+    const map = { ...(c.efforts?.[role] ?? {}) }
+    if (effort) map[host] = effort
+    else if (host !== '*' && map['*']) {
+      // Clearing one host must not let it inherit the '*' value: expand '*' to the other hosts.
+      const wildcard = map['*']
+      delete map['*']
+      for (const h of SUPPORTED_HOSTS) if (h !== host && !map[h]) map[h] = wildcard
+      delete map[host]
+    } else delete map[host]
+    if (Object.keys(map).length > 0) c.efforts![role] = map
+    else delete c.efforts![role]
+  })
+}
+
+export function setRoleAgyTier(role: CrewRole, tier: AgyModelTier | null, runtime: SystemRuntime = new SystemRuntime()) {
+  return updateConfig(runtime, (c) => {
+    if (tier) c.agyTiers![role] = tier
+    else delete c.agyTiers![role]
+  })
+}
+
+export function setRoleRouting(role: CrewRole, host: HostId | null, runtime: SystemRuntime = new SystemRuntime()) {
+  return updateConfig(runtime, (c) => {
+    if (host) c.routing![role] = host
+    else delete c.routing![role]
+  })
 }

@@ -9,7 +9,7 @@ import {
   SUPPORTED_HOSTS,
 } from 'hubseb'
 import { type CrewLimitsConfig, resolveRoleMaxSteps } from './limits.ts'
-import { type CrewModelsConfig, resolveRoleModels, ROLE_TIERS } from './models.ts'
+import { type CrewModelsConfig, resolveNativeModel, resolveRoleEffort, ROLE_TIERS } from './models.ts'
 import {
   CREW_ROLES,
   type CrewRole,
@@ -82,12 +82,16 @@ export function renderAgent(
       const rest = fmMatch[2] ?? ''
       const tierMatch = /^tier:\s*(fast|balanced|deep)\s*$/m.exec(fmBody)
       const tier: ReasoningTier = (tierMatch?.[1] as ReasoningTier | undefined) ?? ROLE_TIERS[role]
-      const hostModels = resolveRoleModels(role, tier, modelsConfig)
       const extraLines: string[] = []
       for (const hostId of SUPPORTED_HOSTS) {
-        const val = hostModels[hostId]
+        // agy only accepts native tiers in frontmatter; concrete models are applied at invocation.
+        const val = resolveNativeModel(role, tier, hostId, modelsConfig)
         if (val && !new RegExp(`^model\\.${hostId}:`, 'm').test(fmBody)) {
           extraLines.push(`model.${hostId}: ${val}`)
+        }
+        const effort = resolveRoleEffort(role, hostId, modelsConfig)
+        if (effort && !new RegExp(`^effort\\.${hostId}:`, 'm').test(fmBody)) {
+          extraLines.push(`effort.${hostId}: ${effort}`)
         }
       }
       if (extraLines.length > 0) {
